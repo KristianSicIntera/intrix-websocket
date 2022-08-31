@@ -3,6 +3,7 @@ import express from 'express'
 import { WebSocketServer } from 'ws'
 import url from 'url'
 import paseto from 'paseto'
+import { Server } from "socket.io"
 
 Object.filter = (obj, predicate) => 
     Object.keys(obj)
@@ -32,10 +33,8 @@ console.log('redisConfig: ' + JSON.stringify(redisConfig, null, 4))
 const redisClient = redis.createClient(redisConfig)
 
 
-const socket = new WebSocketServer({
-  port: 5001,
-  path: '/websockets'
-})
+const socketio = new Server()
+socketio.listen(5001)
 
 const websocketClients = {}
 
@@ -51,107 +50,107 @@ redisClient.connect().then(async () => {
   console.log('[successfully connected to redis]')
 })
 
-socket.on("close", ()  => { /*WS not implemented, implement keep alive ... */ })
+socketio.use((socket, next) => {
+  const token = socket.handshake.query.token
+  if (token){
+    socket.token = token
+    next()
+  }
+  else {
+    next(new Error('Authentication error'))
+  }    
+})
+.on('connection', setup)
 
-socket.on('connection',async (websocket, request) => {
-  //const origin = request.headers.origin
-  //const origin = 'https://interadoo88.intrix.si/'
-  //const clientID = url.parse(origin, true).hostname.split('.')[0]
+async function setup(socket) {
 
-  const uuid = request.headers['sec-websocket-key']
-
-  const query = url.parse(request.url, true).query
-
-  //const { token } = query
-  const token = "v3.local.VKlNogsHwZ-7tkGNTa4sWHBPmQH_AjcLqmyfODkOTQD96DoH4pQh1wceSPb_40YlWDy_4ekeAPh2rgQ7BVGoJkDa6I7Mwng--4s--D1zMMi7f-B1PVk49amlIXdfJEltZLoNWyvEgCoRgcKfu_FQC4jkr-ln2kM2UsmOBwME00Ie4Tf_0l2iabXdMjoyh_5qOnfrdH5wbKhcjZ9YnuW6RhY"
-  
+  const uuid = socket.id
+  const { token } = socket
   const tkn = await decodeToken(token)
   const {client_id: clientID, user_id: username} = tkn
+
+  console.log("[CONNECTED]",{tkn})
 
   if (!websocketClients[clientID]) {
     websocketClients[clientID] = {}
   }
-
-
 
   if (!websocketClients[clientID][username]) {
     websocketClients[clientID][username] = {}
   }
 
   websocketClients[clientID][username][uuid] = {
-    websocket,
+    socket,
     route: '',
   }
 
-  
   redisClient.pSubscribe(`in3x/${clientID}/user/*`, payload => {
-    const websocket = websocketClients[clientID][username][uuid].websocket
-    websocket?.send(payload)
+    const socket = websocketClients[clientID][username][uuid].socket
+    socket?.send(payload)
   })
   
-  const sockets = websocketClients[clientID][username]
-
-  websocket.on('message', async (_payload) => {
-
-    const payload = JSON.parse(_payload)
-
-    //console.log('[payload]: ' + JSON.stringify(payload, null, 4))
-    switch (payload.type) {
-      case 'route-change':
-
-        const {route} = payload
-        const {name, params, path} = route
-
-        switch (name) {
-          case 'classId':
-            break
-          case 'classId-instanceId':
-            break
-          case 'classId-instanceId-edit':
-            break
-        }
-        
-        const previousPath = websocketClients[clientID][username][uuid].route
-
-        if (previousPath) {
-          const previousChannel = `in3x/${clientID}/watch${previousPath}`
-          redisClient.unsubscribe(previousChannel)
-          console.log('[UN][SUBSCRIBE]', uuid , previousPath)
-        }
-
-        const channel = `in3x/${clientID}/watch${path}`
-
-        websocketClients[clientID][username][uuid].route = path
-
-        redisClient.subscribe(channel, payload => {
-          const websocket = websocketClients[clientID][username][uuid].websocket
-          websocket?.send(payload)
-        })
-
-        console.log('[SUBSCRIBE]', uuid, path)
-        
-        console.log({sockets})
-
-
-        const redisClient2 = redis.createClient(redisConfig)
-        await redisClient2.connect()
-        let PUBSUB_CHANNELS = await redisClient2.PUBSUB_CHANNELS()
-        console.log({PUBSUB_CHANNELS})
-        redisClient2.disconnect()
-
-
-        break
-      case 'disconnect':
-        delete websocketClients[clientID][username][uuid]
-
-        console.log({sockets})
-        break
-
-      default:
-        break
-    }
+  socket.on("disconnect", disconnect)
+  socket.on('message', (payload) => {
+    message(socket, payload, tkn)
   })
-})
+}
+
+function disconnect(reason) {
+  console.log("[DISCONECT]",{reason})
+}
+
+function message(socket, _payload, tkn) {
+
+  console.log("[MESSAGE]",{_payload})
+  
+  const {client_id: clientID, user_id: username} = tkn
+  const payload = JSON.parse(_payload)
+  const uuid = socket.id
+
+  switch (payload.type) {
+    case 'route-change':
+
+      const {route} = payload
+      const {name, params, path} = route
+
+      switch (name) {
+        case 'classId':
+          break
+        case 'classId-instanceId':
+          break
+        case 'classId-instanceId-edit':
+          break
+      }
+      
+      const previousPath = websocketClients[clientID][username][uuid].route
+
+      if (previousPath) {
+        const previousChannel = `in3x/${clientID}/watch${previousPath}`
+        redisClient.unsubscribe(previousChannel)
+        console.log('[UN][SUBSCRIBE]', uuid , previousPath)
+      }
+
+      const channel = `in3x/${clientID}/watch${path}`
+
+      websocketClients[clientID][username][uuid].route = path
+
+      redisClient.subscribe(channel, payload => {
+        const socket = websocketClients[clientID][username][uuid].socket
+        socket?.send(payload)
+      })
+
+      console.log('[SUBSCRIBE]', uuid, path)
+      break
+  }
+}
+
+async function checkClients() {
+  const redisClient2 = redis.createClient(redisConfig)
+  await redisClient2.connect()
+  let PUBSUB_CHANNELS = await redisClient2.PUBSUB_CHANNELS()
+  console.log({PUBSUB_CHANNELS})
+  redisClient2.disconnect()
+}
 
 async function decodeToken (token) {
   const { V3 } = paseto
