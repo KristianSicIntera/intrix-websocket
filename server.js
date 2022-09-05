@@ -1,7 +1,9 @@
 import redis from 'redis'
 import paseto from 'paseto'
+import * as dotenv from 'dotenv'
 import { Server } from 'socket.io'
 
+dotenv.config()
 console.clear()
 
 const env = process.env.NODE_ENV || 'dev'
@@ -24,69 +26,58 @@ const decodeToken = async token => {
   const { V3 } = paseto
   let payload
   try {
-    payload = await V3.decrypt(
-      token,
-      Buffer.from(
-        '4171a1687aa54ae83439a62f873a12917ff4eaa89c8b51cc2d09830b7f4e528b',
-        'hex'
-      )
-    )
-  } catch (error) {}
-
+    payload = await V3.decrypt(token, Buffer.from(process.env.PASETO_KEY, 'hex'))
+  } catch (error) {
+    return
+  }
   return payload
 }
 
 const connect = async socket => {
-  const { token } = socket
-  const tkn = await decodeToken(token)
-  if (!tkn) {
-    return
-  }
-  const { client_id: clientID, user_id: username } = tkn
+  const { client_id: clientID, user_id: username } = socket.info
 
   socket.username = username
 
-  console.log('[CONNECTED]', { tkn })
+  console.log('[CONNECTED]', socket.info)
 
-  redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload => {
+  redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload =>
     socket.send(payload)
-  })
+  )
 
   socket.on('disconnect', reason => disconnect(socket, reason))
-  socket.on('message', payload => message(socket, payload, tkn))
+  socket.on('message', payload => message(socket, payload))
 }
 
 const disconnect = (socket, reason) => {
-  
-  console.log('[DISCONECT]', { reason, socket })
+  const { client_id: clientID, user_id: username } = socket.info
+  redisClient.unsubscribe(`in3x/${clientID}/user/${username}`)
+  console.log('[DISCONECT]', { reason, clientID, username })
 }
 
-const message = (socket, _payload, tkn) => {
+const message = (socket, _payload) => {
   console.log('[MESSAGE]', { _payload })
 
-  const { client_id: clientID } = tkn
+  const { client_id: clientID, user_id: username } = socket.info
+
   const payload = JSON.parse(_payload)
-  const uuid = socket.id
 
   switch (payload.type) {
     case 'route-change':
       const { route } = payload
       const { path } = route
-      const previousPath = socket.route
+      const previousWatch = socket.watch
 
-      if (previousPath) {
-        const previousChannel = `in3x/${clientID}/watch${previousPath}`
-        redisClient.unsubscribe(previousChannel)
-        console.log('[UN][SUBSCRIBE]', uuid, previousPath)
+      if (previousWatch) {
+        redisClient.unsubscribe(previousWatch)
+        console.log('[UNSUBSCRIBE]', username, previousWatch)
       }
 
       const channel = `in3x/${clientID}/watch${path}`
-
-      socket.route = path
+      socket.watch = channel
 
       redisClient.subscribe(channel, payload => socket.send(payload))
 
-      console.log('[SUBSCRIBE]', uuid, path)
+      console.log('[SUBSCRIBE]', username, channel)
       break
     case 'list-clients':
       socketio.fetchSockets().then(sockets => {
@@ -98,7 +89,7 @@ const message = (socket, _payload, tkn) => {
                 sockets.map(socket => {
                   return {
                     username: socket.username,
-                    route: socket.route
+                    watch: socket.watch
                   }
                 })
               )
@@ -108,13 +99,13 @@ const message = (socket, _payload, tkn) => {
       })
       break
     case 'whoami':
-      const { username, route: _route } = socket
+      const { username: _username, watch } = socket
       socket.send(
         JSON.stringify({
           type: 'whoami',
           data: {
-            username,
-            route: _route || {}
+            username: _username,
+            watch: watch || {}
           }
         })
       )
@@ -156,10 +147,16 @@ socketio
   .use((socket, next) => {
     const token = socket.handshake.auth.token
     if (token) {
-      socket.token = token
-      next()
+      decodeToken(token).then(info => {
+        if (info) {
+          socket.info = info
+          next()
+        } else {
+          next(new Error('[Authentication error][invalid token]'))
+        }
+      })
     } else {
-      next(new Error('Authentication error'))
+      next(new Error('[Authentication error][no token provided]'))
     }
   })
   .on('connection', connect)
