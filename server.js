@@ -22,103 +22,72 @@ const redisConfig =
 const redisClient = redis.createClient(redisConfig)
 const socketio = new Server()
 
-const decodeToken = async token => {
-  const { V3 } = paseto
-  let payload
-  try {
-    payload = await V3.decrypt(token, Buffer.from(process.env.PASETO_KEY, 'hex'))
-  } catch (error) {
-    return
-  }
-  return payload
+const decodeToken = token => {
+  const {V3} = paseto
+  return V3.decrypt(token, Buffer.from(process.env.PASETO_KEY, 'hex'))
 }
 
 const connect = async socket => {
   const { client_id: clientID, user_id: username } = socket.info
-
-  socket.username = username
-
-  console.log('[CONNECTED]', socket.info)
-
-  redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload =>
-    socket.send(payload)
-  )
-
+  redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload => socket.send(payload))
   socket.on('disconnect', reason => disconnect(socket, reason))
   socket.on('message', payload => message(socket, payload))
 }
 
-const disconnect = (socket, reason) => {
+const disconnect = (socket, _reason) => {
   const { client_id: clientID, user_id: username } = socket.info
   redisClient.unsubscribe(`in3x/${clientID}/user/${username}`)
-  console.log('[DISCONECT]', { reason, clientID, username })
 }
 
-const message = (socket, _payload) => {
-  console.log('[MESSAGE]', { _payload })
-
+const message = async (socket, _payload) => {
   const { client_id: clientID, user_id: username } = socket.info
-
+  const {watch} = socket
   const payload = JSON.parse(_payload)
-
   switch (payload.type) {
     case 'route-change':
-      const { route } = payload
-      const { path } = route
-      const previousWatch = socket.watch
-
-      if (previousWatch) {
-        redisClient.unsubscribe(previousWatch)
-        console.log('[UNSUBSCRIBE]', username, previousWatch)
-      }
-
+      const {path} = payload.route
       const channel = `in3x/${clientID}/watch${path}`
-      socket.watch = channel
-
+      if (watch) { redisClient.unsubscribe(watch)}
       redisClient.subscribe(channel, payload => socket.send(payload))
-
-      console.log('[SUBSCRIBE]', username, channel)
+      socket.watch = channel
       break
     case 'list-clients':
-      socketio.fetchSockets().then(sockets => {
-        socket.send(
-          JSON.stringify({
-            type: 'list-clients',
-            data: [
-              ...new Set(
-                sockets.map(socket => {
-                  return {
-                    username: socket.username,
-                    watch: socket.watch
-                  }
-                })
-              )
-            ]
-          })
-        )
-      })
+      const sockets = await socketio.fetchSockets()
+      socket.send(
+        JSON.stringify({
+          type: 'list-clients',
+          data: [
+            ...new Set(
+              sockets.map(socket => {
+                return {
+                  username,
+                  watch,
+                }
+              })
+            )
+          ]
+        })
+      )
       break
     case 'whoami':
-      const { username: _username, watch } = socket
       socket.send(
         JSON.stringify({
           type: 'whoami',
           data: {
-            username: _username,
-            watch: watch || {}
+            username,
+            watch,
           }
         })
       )
       break
     case 'redis':
-      checkClients().then(channels => {
-        socket.send(
-          JSON.stringify({
-            type: 'redis',
-            data: channels
-          })
-        )
-      })
+      const channels = await checkClients()
+      socket.send(
+        JSON.stringify({
+          type: 'redis',
+          data: channels
+        })
+      )
       break
   }
 }
@@ -131,30 +100,25 @@ async function checkClients () {
   return PUBSUB_CHANNELS
 }
 
-console.log('redisConfig: ' + JSON.stringify(redisConfig, null, 4))
-
 socketio.listen(5001)
+console.log('IO','🚀')
 
-redisClient.on('error', err => {
-  console.log('[Error] ' + err)
-})
+redisClient.on('error', err =>  console.error('[Error] ' + err))
 
-redisClient.connect().then(async () => {
-  console.log('[successfully connected to redis]')
+redisClient.connect().then(()=>{
+  console.log('REDIS','🚀')
 })
 
 socketio
-  .use((socket, next) => {
+  .use(async (socket, next) => {
     const token = socket.handshake.auth.token
     if (token) {
-      decodeToken(token).then(info => {
-        if (info) {
-          socket.info = info
-          next()
-        } else {
-          next(new Error('[Authentication error][invalid token]'))
-        }
-      })
+      try {
+        socket.info = await decodeToken(token)
+        next()
+      } catch (error) {
+        next(new Error('[Authentication error][invalid token]'))
+      }
     } else {
       next(new Error('[Authentication error][no token provided]'))
     }
