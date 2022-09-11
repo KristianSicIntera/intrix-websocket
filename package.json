@@ -1,20 +1,11 @@
 {
   "type": "module",
   "dependencies": {
-    "clipboardy": "^3.0.0",
-    "crypto": "^1.0.1",
-    "dotenv": "^16.0.2",
-    "events": "^3.3.0",
-    "express": "^4.18.1",
-    "fs": "^0.0.1-security",
-    "jsonwebtoken": "^8.5.1",
-    "nodemon": "^2.0.16",
-    "paseto": "^3.1.0",
-    "query-string": "^7.1.1",
     "redis": "^4.2.0",
+    "paseto": "^3.1.0",
+    "dotenv": "^16.0.2",
     "socket.io": "^4.5.1",
-    "url": "^0.11.0",
-    "ws": "^8.7.0"
+    "nodemon": "^2.0.16"
   },
   "scripts": {
     "start": "node server.js",
