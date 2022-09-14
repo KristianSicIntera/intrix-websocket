@@ -3,6 +3,9 @@ import paseto from 'paseto'
 import * as dotenv from 'dotenv'
 import { Server } from 'socket.io'
 
+import { createServer } from 'http'
+import { instrument } from '@socket.io/admin-ui'
+
 dotenv.config()
 console.clear()
 
@@ -20,7 +23,19 @@ const redisConfig =
       }
 
 const redisClient = redis.createClient(redisConfig)
-const socketio = new Server()
+
+const httpServer = createServer()
+
+const socketio = new Server(httpServer, {
+  cors: {
+    origin: ['https://admin.socket.io'],
+    credentials: true
+  }
+})
+
+instrument(socketio, {
+  auth: false
+})
 
 const decodeToken = token => {
   const {V3} = paseto
@@ -28,19 +43,19 @@ const decodeToken = token => {
 }
 
 const connect = async socket => {
-  const { client_id: clientID, user_id: username } = socket.info
+  const { client_id: clientID, user_id: username } = socket.data
   redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload => socket.send(payload))
   socket.on('disconnect', reason => disconnect(socket, reason))
   socket.on('message', payload => message(socket, payload))
 }
 
 const disconnect = (socket, _reason) => {
-  const { client_id: clientID, user_id: username } = socket.info
+  const { client_id: clientID, user_id: username } = socket.data
   redisClient.unsubscribe(`in3x/${clientID}/user/${username}`)
 }
 
 const message = async (socket, _payload) => {
-  const { client_id: clientID, user_id: username } = socket.info
+  const { client_id: clientID, user_id: username } = socket.data
   const {watch} = socket
   const payload = JSON.parse(_payload)
   switch (payload.type) {
@@ -100,7 +115,9 @@ async function checkClients () {
   return PUBSUB_CHANNELS
 }
 
-socketio.listen(5001)
+httpServer.listen(5001)
+//socketio.listen(5001)
+
 console.log('IO','🚀')
 
 redisClient.on('error', err =>  console.error('[Error] ' + err))
@@ -114,7 +131,7 @@ socketio
     const token = socket.handshake.auth.token
     if (token) {
       try {
-        socket.info = await decodeToken(token)
+        socket.data = await decodeToken(token)
         next()
       } catch (error) {
         next(new Error('[Authentication error][invalid token]'))

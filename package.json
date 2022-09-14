@@ -1,11 +1,13 @@
 {
   "type": "module",
   "dependencies": {
-    "redis": "^4.2.0",
-    "paseto": "^3.1.0",
+    "@socket.io/admin-ui": "^0.4.0",
     "dotenv": "^16.0.2",
-    "socket.io": "^4.5.1",
-    "nodemon": "^2.0.16"
+    "http": "^0.0.1-security",
+    "nodemon": "^2.0.16",
+    "paseto": "^3.1.0",
+    "redis": "^4.2.0",
+    "socket.io": "^4.5.1"
   },
   "scripts": {
     "start": "node server.js",
