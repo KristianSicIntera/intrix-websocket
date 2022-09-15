@@ -126,18 +126,24 @@ redisClient.connect().then(()=>{
   console.log('REDIS','🚀')
 })
 
-socketio
+socketio.of(/^\/\w+$/)
   .use(async (socket, next) => {
     const token = socket.handshake.auth.token
     if (token) {
       try {
         socket.data = await decodeToken(token)
-        next()
+        const workspace = socket.nsp.name.substring(1)
+        const {client_id} = socket.data
+        if (workspace == client_id) {
+          next(null, true)
+        } else {
+          next(new Error('[authorization error][data missmatch]'))
+        }
       } catch (error) {
         next(new Error('[Authentication error][invalid token]'))
       }
     } else {
-      next(new Error('[Authentication error][no token provided]'))
+      next(new Error('[error][no token provided]'))
     }
   })
   .on('connection', connect)
