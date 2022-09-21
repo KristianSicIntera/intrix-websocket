@@ -3,8 +3,8 @@ import paseto from 'paseto'
 import * as dotenv from 'dotenv'
 import { Server } from 'socket.io'
 
-import { createServer } from 'http'
-import { instrument } from '@socket.io/admin-ui'
+//import { createServer } from 'http'
+//import { instrument } from '@socket.io/admin-ui'
 
 dotenv.config()
 console.clear()
@@ -12,41 +12,48 @@ console.clear()
 const env = process.env.NODE_ENV || 'dev'
 
 const redisConfig =
-  env == 'dev'
-    ? {}
-    : {
+  env == 'production'
+    ? {
         socket: {
           host: 'redis',
           port: 6379
         },
         password: 'mypassword'
       }
+    : {}
+
+console.log({ redisConfig })
 
 const redisClient = redis.createClient(redisConfig)
 
-const httpServer = createServer()
+//const httpServer = createServer()
 
-const socketio = new Server(httpServer, {
-  cors: {
-    origin: ['https://admin.socket.io'],
-    credentials: true
-  }
-})
+// const socketio = new Server(httpServer, {
+//   cors: {
+//     origin: ['https://admin.socket.io'],
+//     credentials: true
+//   }
+// })
 
-instrument(socketio, {
-  auth: false
-})
+const socketio = new Server()
+
+//instrument(socketio, {
+//  auth: false
+//})
 
 const decodeToken = token => {
-  const {V3} = paseto
-  return V3.decrypt(token, Buffer.from(process.env.PASETO_KEY, 'hex'))
+  const { V3 } = paseto
+  const key = Buffer.from(process.env.PASETO_KEY, 'hex')
+  return V3.decrypt(token, key)
 }
 
 const connect = async socket => {
   const { client_id: clientID, user_id: username } = socket.data
-  redisClient.subscribe(`in3x/${clientID}/user/${username}`, payload => socket.send(payload))
+  const indentiffier = `in3x/${clientID}/user/${username}`
   socket.on('disconnect', reason => disconnect(socket, reason))
   socket.on('message', payload => message(socket, payload))
+  redisClient.subscribe(indentiffier, payload => socket.send(payload))
+  socket.join(indentiffier)
 }
 
 const disconnect = (socket, _reason) => {
@@ -56,15 +63,19 @@ const disconnect = (socket, _reason) => {
 
 const message = async (socket, _payload) => {
   const { client_id: clientID, user_id: username } = socket.data
-  const {watch} = socket
+  const { watch } = socket
   const payload = JSON.parse(_payload)
   switch (payload.type) {
     case 'route-change':
-      const {path} = payload.route
-      const channel = `in3x/${clientID}/watch${path}`
-      if (watch) { redisClient.unsubscribe(watch)}
-      redisClient.subscribe(channel, payload => socket.send(payload))
-      socket.watch = channel
+      const { path } = payload.route
+      const indentiffier = `in3x/${clientID}/watch${path}`
+      if (watch) {
+        redisClient.unsubscribe(watch)
+        socket.leave(watch)
+      }
+      redisClient.subscribe(indentiffier, payload => socket.send(payload))
+      socket.join(indentiffier)
+      socket.watch = indentiffier
       break
     case 'list-clients':
       const sockets = await socketio.fetchSockets()
@@ -73,12 +84,7 @@ const message = async (socket, _payload) => {
           type: 'list-clients',
           data: [
             ...new Set(
-              sockets.map(socket => {
-                return {
-                  username,
-                  watch,
-                }
-              })
+              sockets.map(socket => socket.data)
             )
           ]
         })
@@ -90,7 +96,7 @@ const message = async (socket, _payload) => {
           type: 'whoami',
           data: {
             username,
-            watch,
+            watch
           }
         })
       )
@@ -115,30 +121,26 @@ async function checkClients () {
   return PUBSUB_CHANNELS
 }
 
-httpServer.listen(5001)
-//socketio.listen(5001)
+//httpServer.listen(5001)
+socketio.listen(5001)
 
-console.log('IO','🚀')
+console.log('IO', '🚀')
 
-redisClient.on('error', err =>  console.error('[Error] ' + err))
+redisClient.on('error', err => console.error('[Error] ' + err))
 
-redisClient.connect().then(()=>{
-  console.log('REDIS','🚀')
+redisClient.connect().then(() => {
+  console.log('REDIS', '🚀')
 })
 
-socketio.of(/^\/\w+$/)
+socketio
   .use(async (socket, next) => {
+    const {host, origin} = socket.handshake.headers
     const token = socket.handshake.auth.token
     if (token) {
       try {
         socket.data = await decodeToken(token)
-        const workspace = socket.nsp.name.substring(1)
-        const {client_id} = socket.data
-        if (workspace == client_id) {
-          next(null, true)
-        } else {
-          next(new Error('[authorization error][data missmatch]'))
-        }
+        console.log({host, origin})
+        next(null, true)
       } catch (error) {
         next(new Error('[Authentication error][invalid token]'))
       }
